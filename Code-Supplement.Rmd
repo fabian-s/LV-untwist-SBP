@@ -1,0 +1,484 @@
+---
+title: "Predictive Value of Left Ventricular Untwist on Intradialytic Blood Pressure and Outcome in Patients with mildly reduced and  Preserved Ejection Fraction"
+subtitle: "Code & Data Supplement"
+author: "Nidhal Bouchadha, Fabian Scheipl"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup
+
+```{r}
+library(mgcv)
+library(MASS)
+library(tidyverse)
+library(tidyfun)
+library(refund)
+library(patchwork)
+library(ggplot2)
+pacman::p_load(pacman, rio)
+pacman::p_load(pacman, psych)
+library(table1)
+library(mgcViz)
+library(rgl)
+
+data <- readRDS("data-anonymized.rds")
+data_rep2 <- readRDS("data-rep-anonymized.rds")
+```
+
+## Raw data
+
+```{r}
+p1 <- gglasagna(data, tf = pas_overall, order = tf_fmean(pas_overall)) +
+  scale_fill_viridis_c("") + 
+  scale_color_viridis_c("") +
+  labs(subtitle = "Systolic BP", 
+       caption = "patients sorted by mean SBP", 
+       x = "Hemodialysis") 
+p2 <- gglasagna(data, tf = LV_torsion, order = tf_fmean(pas_overall)) +
+  scale_fill_viridis_c("", option = "A") + 
+  scale_color_viridis_c("", option = "A") +
+  labs(subtitle = "LV torsion (deg.)", 
+       caption = "", x = "cardiac cycle proportion") 
+p3 <- gglasagna(data, tf = gls, order = tf_fmean(pas_overall)) +
+  scale_fill_viridis_c("", option = "C") + 
+  scale_color_viridis_c("", option = "C") +
+  labs(subtitle = "GLS (%)",  caption = "",
+       x = "cardiac cycle proportion") 
+p1 + p2 + p3
+```
+
+
+## Mean Functions & Descriptive Statistics
+
+```{r}
+tf_ind <- which(map(data, is_tf) |> unlist())
+table1::table1(~ age + factor(SEXE) + factor(HTA) + factor(DBT) + dialaysishistory + weight + uf_mean + lvef + ivc +
+                 tapse + masse + ee + LV_torsion_max + LV_torsion_max_time + 
+                 gls_max + gls_max_time + follow_up + factor(death), 
+               data[,-tf_ind],
+               render.continuous = c(.="Mean (SD)", .="Median [Q1-Q3]")) |> 
+  table1::t1kable(longtable = TRUE)
+```
+
+```{r}
+data_mean <- data |>
+  dplyr::select(id, LV_torsion, gls, rvfws, pas_overall) %>%
+  dplyr::summarize(across(-id, c(mean = mean, sd = sd), na.rm = TRUE))
+```
+
+```{r}
+p1 <- ggplot(data_mean) +
+  geom_spaghetti(aes(y = gls_mean), color = "blue", linewidth = 1.25) +
+  geom_errorband(
+    aes(
+      ymax = gls_mean + 2 * gls_sd / sqrt(70),
+      ymin = gls_mean - 2 * gls_sd / sqrt(70)
+    ),
+    fill = "blue"
+  ) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(x = "Cardiac cycle proportion", y = "GLS (%)")
+
+p2 <- ggplot(data_mean) +
+  geom_spaghetti(aes(y = LV_torsion_mean), color = "red", linewidth = 1.25) +
+  geom_errorband(
+    aes(
+      ymax = LV_torsion_mean + 2 * LV_torsion_sd / sqrt(70),
+      ymin = LV_torsion_mean - 2 * LV_torsion_sd / sqrt(70)
+    ),
+    fill = "red"
+  ) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(x = "Cardiac cycle proportion", y = "LV Torsion (degree)")
+
+p3 <- ggplot(data_mean) +
+  geom_meatballs(aes(y = pas_overall_mean), color = "gold", linewidth = 1.25) +
+  geom_errorband(
+    aes(
+      ymax = pas_overall_mean + 2 * pas_overall_sd / sqrt(70),
+      ymin = pas_overall_mean - 2 * pas_overall_sd / sqrt(70)
+    ),
+    fill = "gold"
+  ) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(x = "Hemodialysis", y = "Systolic blood pressure")
+
+patchwork<-(p1|p2)/p3
+
+patchwork+plot_annotation(
+  title = "",
+  subtitle = "",
+  caption = "mean +/- 2 standard errors"
+)
+```
+
+## Blood Pressure Model
+
+```{r}
+torsion_lr <- as.matrix(data_rep2$LV_torsion)
+gls_lr <- as.matrix(data_rep2$gls) 
+rv_lr <- as.matrix(data_rep2$rvfws)
+
+data_rep2_fit <- pfr(
+  BP ~ uf + 
+      masse +
+      SEXE +
+      age +
+      HTA +
+      DBT +
+      ivc +
+      dialaysishistory +
+      lf(gls_lr) +
+      lf(torsion_lr) +
+      lf(rv_lr) +
+      re(id),
+  method = "REML",
+  data = data_rep2
+)
+summary(data_rep2_fit)
+```
+
+```{r}
+g <- getViz(data_rep2_fit)
+check(g)
+qq.gamViz(g, level = .9, CI = "quantile")
+
+plot(sm(g, 1)) +
+  l_fitLine(colour = "blue") +
+  l_ciLine(colour = "blue", linetype = 1) +
+  l_ciPoly(fill = "blue", alpha = 0.3) +
+  theme_light() +
+  geom_hline(yintercept = 0, linetype = 2) +
+  labs(x = "Cardiac cycle proportion", y = "GLS effect ") +
+  plot_annotation(caption = "pointwise 95% CIs")
+
+plot(sm(g, 2)) +
+  l_fitLine(colour = "red") +
+  l_ciLine(colour = "red", linetype = 1) +
+  l_ciPoly(fill = "red", alpha = 0.3) +
+  theme_light() +
+  geom_hline(yintercept = 0, linetype = 2) +
+  labs(x = "Cardiac cycle proportion", y = "Torsion effect") +
+  plot_annotation(caption = "pointwise 95% CIs")
+```
+
+#### Bootstrap analysis
+
+(adapted from  https://doi.org/10.1002/sim.10194)
+
+```{r}
+NJ <- nrow(data_rep2)
+uid <- unique(data_rep2$id)
+nid <- nrow(data_rep2)
+
+lX_sm_gls <- as.matrix(data_rep2$gls)
+lX_sm_tor <- as.matrix(data_rep2$LV_torsion)
+lX_sm_rv <- as.matrix(data_rep2$rvfws * -1)
+
+#### create matrices for "cardiac cycle" and numeric integration via Riemann integration
+sind <- seq(0, 1, len = 33)
+smat <- matrix(1, nid, 1) %x% matrix(sind, 1, 33) # just a repetition of sind on all the rows
+lmat <- matrix(1 / 33, nid, 33)
+
+## merge PA data into the dataframe
+data_rep2$smat <- I(smat) # used for fitting FGLM (functional domain matrix)
+
+data_rep2$lX_lmat_gls <- I(lX_sm_gls * lmat)
+data_rep2$lX_lmat_tor <- I(lX_sm_tor * lmat)
+data_rep2$lX_lmat_rv <- I(lX_sm_rv * lmat) # used for fitting FGLM (numeric integration times functional predictor)
+rm(lmat, smat, nid, NJ, lX_sm_gls, lX_sm_tor, lX_sm_rv)
+```
+
+
+```{r}
+## create dataframe used for extracting predicted coefficient
+vars_covar <- c(
+  "uf",
+  "SEXE",
+  "age",
+  "HTA",
+  "DBT",
+  "ivc",
+  "dialaysishistory",
+  "id",
+  "masse"
+)
+
+ns_pred <- 1000
+sind_pred <- seq(0, 1, len = ns_pred)
+df_pred <- data.frame(
+  lX_lmat_gls = 1,
+  lX_lmat_tor = 1,
+  lX_lmat_rv = 1,
+  smat = sind_pred,
+  data_rep2[1, vars_covar]
+)
+
+fit_SOFR_uw <- gam(
+  BP ~
+    uf +
+      masse +
+      SEXE +
+      age +
+      HTA +
+      DBT +
+      ivc +
+      dialaysishistory +
+      s(smat, by = lX_lmat_gls) +
+      s(smat, by = lX_lmat_tor) +
+      s(smat, by = lX_lmat_rv) +
+      s(id, bs = "re"),
+  data = data_rep2,
+  method = "REML"
+)
+
+## get the estimated coefficient plus intercept term: \beta_0 + \gamma(s)   for s \in [0,1]
+est_uw <- predict(fit_SOFR_uw, newdata = df_pred, type = 'terms', se.fit = TRUE)
+
+
+g <- getViz(fit_SOFR_uw)
+
+check(g) #  is it OK?
+
+plot(sm(g, 1)) +
+  l_fitLine(colour = "red") +
+  l_ciLine(mul = 2, colour = "blue", linetype = 2) +
+  theme_classic() +
+  geom_hline(yintercept = 0)
+
+plot(sm(g, 2)) +
+  l_fitLine(colour = "red") +
+  l_ciLine(mul = 2, colour = "blue", linetype = 2) +
+  theme_classic() +
+  geom_hline(yintercept = 0)
+
+plot(sm(g, 3)) +
+  l_fitLine(colour = "red") +
+  l_ciLine(mul = 2, colour = "blue", linetype = 2) +
+  theme_classic() +
+  geom_hline(yintercept = 0)
+#same model as PFR above
+```
+
+
+```{r, cache = TRUE}
+## get  bootstrap SEs
+nboot <- 500
+coef_mat_boot_gls <- matrix(NA, nboot, ns_pred)
+coef_mat_boot_tor <- matrix(NA, nboot, ns_pred)
+# pb_boot <- txtProgressBar(min=0, max=nboot,style=3)
+inq_q_mat <- matrix(NA, nboot, dim(data_rep2)[1])
+
+for(q in 1:nboot){
+  
+        inx_q <- sample(1:dim(data_rep2)[1], size=dim(data_rep2)[1], replace=TRUE)
+        inq_q_mat[q,] <- inx_q
+        
+       data_rep2_q <- data_rep2[inx_q,]
+        fit_gnq <- gam(fit_SOFR_uw$formula,method="REML", data=data_rep2_q)
+        coef_mat_boot_gls[q,] <- predict(fit_gnq, newdata=df_pred, type="iterms")[,"s(smat):lX_lmat_gls"]
+        # setTxtProgressBar(pb_boot, value=q)
+         coef_mat_boot_tor[q,] <- predict(fit_gnq, newdata=df_pred, type="iterms")[,"s(smat):lX_lmat_tor"]
+  if (!(q%%10)) cat(q, "  ")
+}
+
+
+se_boot_gls_gamma <- apply(coef_mat_boot_gls, 2, sd, na.rm=TRUE)
+se_boot_tor_gamma <- apply(coef_mat_boot_tor, 2, sd, na.rm=TRUE)
+
+# using quantiles to build CI
+quantile_gls_up<-vector()
+quantile_gls_lo<-vector()
+
+
+for (i in 1:dim(coef_mat_boot_gls)[2]){
+ quantile_gls_up[i]<-quantile(coef_mat_boot_gls[,i],probs = 0.975) 
+ quantile_gls_lo[i]<-quantile(coef_mat_boot_gls[,i],probs = 0.025)
+}
+
+
+quantile_tor_up<-vector()
+quantile_tor_lo<-vector()
+
+for (i in 1:dim(coef_mat_boot_tor)[2]){
+ quantile_tor_up[i]<-quantile(coef_mat_boot_tor[,i],probs = 0.975) 
+ quantile_tor_lo[i]<-quantile(coef_mat_boot_tor[,i],probs = 0.025)
+}
+```
+
+```{r}
+# Non-parametric Bootstrap of the Max Absolute Statistic
+# adapted from "Functional Data Analysis with R" (https://doi.org/10.1201/9781003278726)
+#Find the max statistic
+dvec_gls <- apply(
+  coef_mat_boot_gls,
+  1,
+  function(x) max(abs(x - est_uw$fit[, 9]) / est_uw$se.fit[, 9])
+)
+dvec_tor <- apply(
+  coef_mat_boot_tor,
+  1,
+  function(x) max(abs(x - est_uw$fit[, 10]) / est_uw$se.fit[, 10])
+)
+
+Z_global_gls <- quantile(dvec_gls, 0.95)
+Z_global_tor <- quantile(dvec_tor, 0.95)
+
+## point estimates of the functional coefficient and various SE estimates,
+## combine into tibble using tidyfun
+
+df_plot <- tibble(id = 1)
+
+df_plot$gls_estimate <- tfd(est_uw$fit[, 9], seq(0, 1, length.out = 1000))
+df_plot$torsion_estimate <- tfd(est_uw$fit[, 10], seq(0, 1, length.out = 1000))
+df_plot$gls_se <- tfd(est_uw$se.fit[, 9], seq(0, 1, length.out = 1000))
+df_plot$torsion_se <- tfd(est_uw$se.fit[, 10], seq(0, 1, length.out = 1000))
+df_plot$gls_se_boot <- tfd(se_boot_gls_gamma, seq(0, 1, length.out = 1000))
+df_plot$torsion_se_boot <- tfd(se_boot_tor_gamma, seq(0, 1, length.out = 1000))
+df_plot$quantile_gls_up <- tfd(quantile_gls_up, seq(0, 1, length.out = 1000))
+df_plot$quantile_gls_lo <- tfd(quantile_gls_lo, seq(0, 1, length.out = 1000))
+df_plot$quantile_tor_up <- tfd(quantile_tor_up, seq(0, 1, length.out = 1000))
+df_plot$quantile_tor_lo <- tfd(quantile_tor_lo, seq(0, 1, length.out = 1000))
+```
+
+```{r}
+# plot CI bands according to quantiles
+ggplot(df_plot) +
+  geom_spaghetti(aes(y = gls_estimate)) +
+  geom_errorband(
+    aes(
+      ymax = gls_estimate + qnorm(0.975) * gls_se,
+      ymin = gls_estimate - qnorm(0.975) * gls_se
+    ),
+    fill = "red"
+  ) +
+  geom_errorband(
+    aes(ymax = quantile_gls_up, ymin = quantile_gls_lo),
+    fill = "darkred"
+  ) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  xlab("Cardiac cycle proportion") +
+  ylab("Longitudinal strain effect") +
+  theme_light()
+
+
+ggplot(df_plot) +
+  geom_spaghetti(aes(y = torsion_estimate)) +
+  geom_errorband(
+    aes(
+      ymax = torsion_estimate + qnorm(0.975) * torsion_se,
+      ymin = torsion_estimate - qnorm(0.975) * torsion_se
+    ),
+    fill = "lightblue"
+  ) +
+
+  geom_errorband(
+    aes(ymax = quantile_tor_up, ymin = quantile_tor_lo),
+    fill = "blue"
+  ) +
+
+  geom_hline(yintercept = 0, linetype = 2) +
+  xlab("Cardiac cycle proportion") +
+  ylab("Torsion effect") +
+  theme_light()
+```
+
+```{r}
+# with bootstrap CI other quantile method
+ggplot(df_plot) +
+  geom_spaghetti(aes(y = gls_estimate)) +
+  geom_errorband(
+    aes(
+      ymax = gls_estimate + qnorm(0.975) * gls_se,
+      ymin = gls_estimate - qnorm(0.975) * gls_se
+    ),
+    fill = "red"
+  ) +
+  geom_errorband(
+    aes(
+      ymax = gls_estimate + qnorm(0.975) * gls_se_boot,
+      ymin = gls_estimate - qnorm(0.975) * gls_se_boot
+    ),
+    fill = "darkred"
+  ) +
+  geom_errorband(
+    aes(
+      ymax = gls_estimate + Z_global_gls * gls_se,
+      ymin = gls_estimate - Z_global_gls * gls_se
+    ),
+    fill = "darkgrey"
+  ) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  xlab("Cardiac cycle proportion") +
+  ylab("longitudinal strain effect") +
+  theme_light()
+
+
+ggplot(df_plot) +
+  geom_spaghetti(aes(y = torsion_estimate)) +
+  geom_errorband(
+    aes(
+      ymax = torsion_estimate + qnorm(0.975) * torsion_se,
+      ymin = torsion_estimate - qnorm(0.975) * torsion_se
+    ),
+    fill = "lightblue"
+  ) +
+
+  geom_errorband(
+    aes(
+      ymax = torsion_estimate + qnorm(0.975) * torsion_se_boot,
+      ymin = torsion_estimate - qnorm(0.975) * torsion_se_boot,
+    ),
+    fill = "blue"
+  ) +
+  geom_errorband(
+    aes(
+      ymax = torsion_estimate + Z_global_tor * torsion_se,
+      ymin = torsion_estimate - Z_global_tor * torsion_se
+    ),
+    fill = "darkgrey"
+  ) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  xlab("Cardiac cycle proportion") +
+  ylab("Torsion effect") +
+  theme_light()
+```
+
+## Mortality Model
+
+
+```{r}
+# predicting death
+
+gls_mat<-as.matrix(data$gls)
+torsion_mat<-as.matrix(data$LV_torsion)
+death_fit<-pfr(death~lf(gls_mat)+lf(torsion_mat),method="REML",family=binomial(), data=data)
+summary(death_fit)
+```
+
+```{r}
+death_plot<-getViz(death_fit)
+check(death_plot)
+qq.gamViz(death_plot, level = .9,CI = "quantile")
+
+plot(sm(death_plot,1))+l_fitLine(colour = "blue") +
+    l_ciLine( colour = "blue", linetype = 1) +l_ciPoly(fill="blue",alpha=0.3)+ theme_light()+geom_hline(yintercept = 0,linetype = 2)+labs(x="Cardiac Cycle proportion",y="GLS effect on mortality ")+plot_annotation( caption = "pointwise 95% CIs")
+plot(sm(death_plot,2))+l_fitLine(colour = "red") +
+    l_ciLine( colour = "red", linetype = 1)+l_ciPoly(fill="red",alpha=0.3) + theme_light()+geom_hline(yintercept = 0,linetype = 2)+labs(x="Cardiac Cycle proportion",y="Torsion effect on mortality")+plot_annotation( caption = "pointwise 95% CIs")
+```
+
+-------------------------
+
+## System Info
+
+```{r}
+sessionInfo()
+```
